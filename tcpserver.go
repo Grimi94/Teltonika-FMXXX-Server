@@ -5,9 +5,11 @@ import (
         "encoding/binary"
         "encoding/hex"
         "fmt"
+        // "gopkg.in/mgo.v2"
         "math"
         "net"
         "os"
+        "strconv"
         "time"
 )
 
@@ -18,6 +20,10 @@ const (
 )
 
 const PRECISION = 10000000.0
+const MONGO_DATABASE = "127.0.0.1:27010"
+const MONGO_PLACES_COLLECTION = ""
+const MONGO_RECORD_COLLECTION = ""
+const MONGO_URL = ""
 
 type GPSElement struct {
         latitude  float64
@@ -27,6 +33,16 @@ type GPSElement struct {
 }
 
 func main() {
+        // Initialize mongo connector
+        // session, err := mgo.Dial(MONGO_URL)
+        // var c *mgo.Collection = nil
+        // if err != nil {
+        //         fmt.Println("mgo error: ", err.Error())
+        //         os.Exit(1)
+        // }
+        // c = session.DB(MONGO_DATABASE).C(MONGO_COLLECTION)
+        // c.Insert()
+
         // Listen for incoming connections.
         l, err := net.Listen(CONN_TYPE, CONN_HOST+":"+CONN_PORT)
         if err != nil {
@@ -99,18 +115,19 @@ func handleRequest(conn net.Conn) {
 
 func parseData(data []byte, size int) []GPSElement {
         reader := bytes.NewBuffer(data)
-        var i int8 = 0
+        fmt.Println("Reader Size:", reader.Len())
 
-        reader.Next(8)                               // header
-        reader.Next(1)                               // CodecID
-        recordNumber := streamToInt8(reader.Next(1)) // Number of Records
-        fmt.Println("Number of Records:", recordNumber)
-        timestamp := streamToTime(reader.Next(8)) // Timestamp
-        reader.Next(1)                            // Priority
+        reader.Next(8)                                                      // header
+        reader.Next(1)                                                      // CodecID
+        recordNumber, _ := strconv.Atoi(hex.EncodeToString(reader.Next(1))) // Number of Records
 
         elements := make([]GPSElement, recordNumber)
 
+        i := 0
         for i < recordNumber {
+                timestamp := streamToTime(reader.Next(8)) // Timestamp
+                reader.Next(1)                            // Priority
+
                 // GPS Element
                 longitude := float64(streamToInt32(reader.Next(4))) / PRECISION // Longitude
                 latitude := float64(streamToInt32(reader.Next(4))) / PRECISION  // Latitude
@@ -124,18 +141,19 @@ func parseData(data []byte, size int) []GPSElement {
 
                 // IO Events Elements
 
-                _ = streamToInt8(reader.Next(1)) // ioEventID
+                reader.Next(1) // ioEventID
                 totalElements := streamToInt8(reader.Next(1))
+                fmt.Println("Total Elements:", totalElements)
 
-                stage := 0
-                var j int8 = 0
-
-                for j < totalElements {
+                stage := 1
+                for stage <= 4 {
+                        fmt.Println("Stage:", stage)
                         stageElements := streamToInt8(reader.Next(1))
-                        var k int8 = 0
+                        fmt.Println("Stage Elements:", stageElements)
 
-                        for k < stageElements {
-                                _ = streamToInt8(reader.Next(1)) // elementID
+                        var j int8 = 0
+                        for j < stageElements {
+                                reader.Next(1) // elementID
 
                                 switch stage {
                                 case 1: // One byte IO Elements
@@ -152,7 +170,6 @@ func parseData(data []byte, size int) []GPSElement {
                         stage++
                 }
 
-                // fmt.Println("Element:", i)
                 fmt.Println("Timestamp:", timestamp)
                 fmt.Println("Longitude:", longitude)
                 fmt.Println("Latitude:", latitude)
@@ -217,7 +234,6 @@ func streamToFloat32(data []byte) float32 {
 }
 
 func twos_complement(input int32) int32 {
-        fmt.Printf("%33b", input)
         mask := int32(math.Pow(2, 31))
         return -(input & mask) + (input &^ mask)
 }
