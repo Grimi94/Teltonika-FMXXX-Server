@@ -1,22 +1,19 @@
 package main
 
 import (
-        "bytes"
-        "encoding/binary"
-        "encoding/hex"
-        "fmt"
-        "gopkg.in/mgo.v2"
-        "math"
-        "net"
-        "os"
-        "strconv"
-        "time"
+	"bytes"
+	"encoding/hex"
+	"fmt"
+	"gopkg.in/mgo.v2"
+	"net"
+	"os"
+	"time"
 )
 
 const (
-        CONN_HOST = "0.0.0.0"
-        CONN_PORT = "4554"
-        CONN_TYPE = "tcp"
+	CONN_HOST = "0.0.0.0"
+	CONN_PORT = "4554"
+	CONN_TYPE = "tcp"
 )
 
 const PRECISION = 10000000.0
@@ -25,240 +22,209 @@ const MONGO_PLACES_COLLECTION = ""
 const MONGO_RECORD_COLLECTION = ""
 const MONGO_URL = ""
 
-type GPSElement struct {
-        latitude  float64
-        longitude float64
-        angle     int16
-        speed     int16
+// Struct for Mongo GeoJSON
+type Location struct {
+	Type        string
+	Coordinates []float64
 }
 
-var pc *mgo.Collection = nil
+// Record Schema
+type Record struct {
+	Imei     string
+	Location Location
+	Time     time.Time
+	Angle    int16
+	Speed    int16
+}
+
+// var pc *mgo.Collection = nil
 var rc *mgo.Collection = nil
 
 func main() {
-        // Initialize mongo connector
-        session, err := mgo.Dial(MONGO_URL)
-        if err != nil {
-                fmt.Println("mgo error: ", err.Error())
-                os.Exit(1)
-        }
+	// Initialize mongo connector
+	session, err := mgo.Dial(MONGO_URL)
+	if err != nil {
+		fmt.Println("mgo error: ", err.Error())
+		os.Exit(1)
+	}
 
-        pc = session.DB(MONGO_DATABASE).C(MONGO_PLACES_COLLECTION)
-        rc = session.DB(MONGO_DATABASE).C(MONGO_RECORD_COLLECTION)
-        fmt.Println(pc.Database)
-        fmt.Println(rc.Database)
+	// pc = session.DB(MONGO_DATABASE).C(MONGO_PLACES_COLLECTION)
+	rc = session.DB(MONGO_DATABASE).C(MONGO_RECORD_COLLECTION)
 
-        // Listen for incoming connections.
-        l, err := net.Listen(CONN_TYPE, CONN_HOST+":"+CONN_PORT)
-        if err != nil {
-                fmt.Println("Error listening:", err.Error())
-                os.Exit(1)
-        }
+	// Listen for incoming connections.
+	l, err := net.Listen(CONN_TYPE, CONN_HOST+":"+CONN_PORT)
+	if err != nil {
+		fmt.Println("Error listening:", err.Error())
+		os.Exit(1)
+	}
 
-        // Close the listener when the application closes.
-        defer l.Close()
+	// Close the listener when the application closes.
+	defer l.Close()
 
-        fmt.Println("Listening on " + CONN_HOST + ":" + CONN_PORT)
-        for {
-                // Listen for an incoming connection.
-                conn, err := l.Accept()
-                if err != nil {
-                        fmt.Println("Error accepting: ", err.Error())
-                        os.Exit(1)
-                }
-                // Handle connections in a new goroutine.
-                go handleRequest(conn)
-        }
+	fmt.Println("Listening on " + CONN_HOST + ":" + CONN_PORT)
+	for {
+		// Listen for an incoming connection.
+		conn, err := l.Accept()
+		if err != nil {
+			fmt.Println("Error accepting: ", err.Error())
+			os.Exit(1)
+		}
+		// Handle connections in a new goroutine.
+		go handleRequest(conn)
+	}
 }
 
 func handleRequest(conn net.Conn) {
-        var b []byte
-        knownIMEI := true
-        step := 1
+	var b []byte
+	var imei string
+	knownIMEI := true
+	step := 1
 
-        // Close the connection when you're done with it.
-        defer conn.Close()
+	// Close the connection when you're done with it.
+	defer conn.Close()
 
-        for {
-                // Make a buffer to hold incoming data.
-                buf := make([]byte, 1024)
+	for {
+		// Make a buffer to hold incoming data.
+		buf := make([]byte, 2048)
 
-                // Read the incoming connection into the buffer.
-                size, err := conn.Read(buf)
-                if err != nil {
-                        fmt.Println("Error reading:", err.Error())
-                        break
-                }
+		// Read the incoming connection into the buffer.
+		size, err := conn.Read(buf)
+		if err != nil {
+			fmt.Println("Error reading:", err.Error())
+			break
+		}
 
-                // Send a response if known IMEI and matches IMEI size
-                if knownIMEI {
-                        b = []byte{1} // 0x01 if we accept the message
+		// Send a response if known IMEI and matches IMEI size
+		if knownIMEI {
+			b = []byte{1} // 0x01 if we accept the message
 
-                        fmt.Println("----------------------------------------")
-                        fmt.Println("Data From:", conn.RemoteAddr().String())
-                        fmt.Println("Size of message: ", size)
-                        fmt.Println("Message:", hex.EncodeToString(buf[:size]))
-                        fmt.Println("Step:", step)
+			message := hex.EncodeToString(buf[:size])
+			fmt.Println("----------------------------------------")
+			fmt.Println("Data From:", conn.RemoteAddr().String())
+			fmt.Println("Size of message: ", size)
+			fmt.Println("Message:", message)
+			fmt.Println("Step:", step)
 
-                        switch step {
-                        case 1:
-                                step++
-                                conn.Write(b)
-                        case 2:
-                                elements, err := parseData(buf, size)
-                                if err != nil {
-                                        fmt.Println("Error while parsing data", err)
-                                        break
-                                }
+			switch step {
+			case 1:
+				step = 2
+				imei = message
+				conn.Write(b)
+			case 2:
+				elements, err := parseData(buf, size, imei)
+				if err != nil {
+					fmt.Println("Error while parsing data", err)
+					break
+				}
 
-                                for i := 0; i < len(elements); i++ {
-                                        element := elements[i]
-                                        err := rc.Insert(&element)
-                                        if err != nil {
-                                                fmt.Println("Error inserting element to database", err)
-                                        }
-                                }
+				for i := 0; i < len(elements); i++ {
+					element := elements[i]
+					err := rc.Insert(&element)
+					if err != nil {
+						fmt.Println("Error inserting element to database", err)
+					}
+				}
 
-                                conn.Write([]byte{0, 0, 0, uint8(len(elements))})
-                        }
+				conn.Write([]byte{0, 0, 0, uint8(len(elements))})
+			}
 
-                } else {
-                        b = []byte{0} // 0x00 if we decline the message
+		} else {
+			b = []byte{0} // 0x00 if we decline the message
 
-                        conn.Write(b)
-                        break
-                }
-        }
+			conn.Write(b)
+			break
+		}
+	}
 }
 
-func parseData(data []byte, size int) (elements []GPSElement, err error) {
-        reader := bytes.NewBuffer(data)
-        fmt.Println("Reader Size:", reader.Len())
+func parseData(data []byte, size int, imei string) (elements []Record, err error) {
+	reader := bytes.NewBuffer(data)
+	// fmt.Println("Reader Size:", reader.Len())
 
-        // Header
-        reader.Next(4)                                                        // 4 Zero Bytes
-        dataLength, err := streamToInt32(reader.Next(4))                      // Header
-        reader.Next(1)                                                        // CodecID
-        recordNumber, err := strconv.Atoi(hex.EncodeToString(reader.Next(1))) // Number of Records
-        fmt.Println("Length of data:", dataLength)
+	// Header
+	reader.Next(4)                                    // 4 Zero Bytes
+	dataLength, err := streamToInt32(reader.Next(4))  // Header
+	reader.Next(1)                                    // CodecID
+	recordNumber, err := streamToInt8(reader.Next(1)) // Number of Records
+	fmt.Println("Length of data:", dataLength)
 
-        elements = make([]GPSElement, recordNumber)
+	elements = make([]Record, recordNumber)
 
-        i := 0
-        for i < recordNumber {
-                timestamp, err := streamToTime(reader.Next(8)) // Timestamp
-                reader.Next(1)                                 // Priority
+	var i int8 = 0
+	for i < recordNumber {
+		timestamp, err := streamToTime(reader.Next(8)) // Timestamp
+		reader.Next(1)                                 // Priority
 
-                // GPS Element
-                longitudeInt, err := streamToInt32(reader.Next(4)) // Longitude
-                longitude := float64(longitudeInt) / PRECISION
-                latitudeInt, err := streamToInt32(reader.Next(4)) // Latitude
-                latitude := float64(latitudeInt) / PRECISION
+		// GPS Element
+		longitudeInt, err := streamToInt32(reader.Next(4)) // Longitude
+		longitude := float64(longitudeInt) / PRECISION
+		latitudeInt, err := streamToInt32(reader.Next(4)) // Latitude
+		latitude := float64(latitudeInt) / PRECISION
 
-                reader.Next(2)                              // Altitude
-                angle, err := streamToInt16(reader.Next(2)) // Angle
-                reader.Next(1)                              // Satellites
-                speed, err := streamToInt16(reader.Next(2)) // Speed
+		reader.Next(2)                              // Altitude
+		angle, err := streamToInt16(reader.Next(2)) // Angle
+		reader.Next(1)                              // Satellites
+		speed, err := streamToInt16(reader.Next(2)) // Speed
 
-                if err != nil {
-                        fmt.Println("Error while reading GPS Element")
-                        break
-                }
+		if err != nil {
+			fmt.Println("Error while reading GPS Element")
+			break
+		}
 
-                elements[i] = GPSElement{longitude, latitude, angle, speed}
+		elements[i] = Record{
+			imei,
+			Location{"Point",
+				[]float64{longitude, latitude}},
+			timestamp,
+			angle,
+			speed}
 
-                // IO Events Elements
+		// IO Events Elements
 
-                reader.Next(1) // ioEventID
-                reader.Next(1) // total Elements
+		reader.Next(1) // ioEventID
+		reader.Next(1) // total Elements
 
-                stage := 1
-                for stage <= 4 {
-                        stageElements, err := streamToInt8(reader.Next(1))
-                        if err != nil {
-                                break
-                        }
+		stage := 1
+		for stage <= 4 {
+			stageElements, err := streamToInt8(reader.Next(1))
+			if err != nil {
+				break
+			}
 
-                        var j int8 = 0
-                        for j < stageElements {
-                                reader.Next(1) // elementID
+			var j int8 = 0
+			for j < stageElements {
+				reader.Next(1) // elementID
 
-                                switch stage {
-                                case 1: // One byte IO Elements
-                                        _, err = streamToInt8(reader.Next(1))
-                                case 2: // Two byte IO Elements
-                                        _, err = streamToInt16(reader.Next(2))
-                                case 3: // Four byte IO Elements
-                                        _, err = streamToInt32(reader.Next(4))
-                                case 4: // Eigth byte IO Elements
-                                        _, err = streamToInt64(reader.Next(8))
-                                }
-                                j++
-                        }
-                        stage++
-                }
+				switch stage {
+				case 1: // One byte IO Elements
+					_, err = streamToInt8(reader.Next(1))
+				case 2: // Two byte IO Elements
+					_, err = streamToInt16(reader.Next(2))
+				case 3: // Four byte IO Elements
+					_, err = streamToInt32(reader.Next(4))
+				case 4: // Eigth byte IO Elements
+					_, err = streamToInt64(reader.Next(8))
+				}
+				j++
+			}
+			stage++
+		}
 
-                if err != nil {
-                        fmt.Println("Error while reading IO Elements")
-                        break
-                }
+		if err != nil {
+			fmt.Println("Error while reading IO Elements")
+			break
+		}
 
-                fmt.Println("Timestamp:", timestamp)
-                fmt.Println("Longitude:", longitude, "Latitude:", latitude)
+		fmt.Println("Timestamp:", timestamp)
+		fmt.Println("Longitude:", longitude, "Latitude:", latitude)
 
-                i++
-        }
+		i++
+	}
 
-        // Once finished with the records we read the Record Number and the CRC
+	// Once finished with the records we read the Record Number and the CRC
 
-        _, err = streamToInt8(reader.Next(1))  // Number of Records
-        _, err = streamToInt32(reader.Next(4)) // CRC
+	_, err = streamToInt8(reader.Next(1))  // Number of Records
+	_, err = streamToInt32(reader.Next(4)) // CRC
 
-        return
-}
-
-func streamToInt8(data []byte) (int8, error) {
-        var y int8
-        err := binary.Read(bytes.NewReader(data), binary.BigEndian, &y)
-        return y, err
-}
-
-func streamToInt16(data []byte) (int16, error) {
-        var y int16
-        err := binary.Read(bytes.NewReader(data), binary.BigEndian, &y)
-        return y, err
-}
-
-func streamToInt32(data []byte) (int32, error) {
-        var y int32
-        err := binary.Read(bytes.NewReader(data), binary.BigEndian, &y)
-        if y>>31 == 1 {
-                y *= -1
-        }
-        return y, err
-}
-
-func streamToInt64(data []byte) (int64, error) {
-        var y int64
-        err := binary.Read(bytes.NewReader(data), binary.BigEndian, &y)
-        return y, err
-}
-
-func streamToFloat32(data []byte) (float32, error) {
-        var y float32
-        err := binary.Read(bytes.NewReader(data), binary.BigEndian, &y)
-        return y, err
-}
-
-func twos_complement(input int32) int32 {
-        mask := int32(math.Pow(2, 31))
-        return -(input & mask) + (input &^ mask)
-}
-
-func streamToTime(data []byte) (time.Time, error) {
-        miliseconds, err := streamToInt64(data)
-        seconds := int64(float64(miliseconds) / 1000.0)
-        nanoseconds := int64(miliseconds % 1000)
-
-        return time.Unix(seconds, nanoseconds), err
+	return
 }
