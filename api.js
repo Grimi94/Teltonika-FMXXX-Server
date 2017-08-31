@@ -7,8 +7,68 @@ const Place = require('./model/Place');
 const Record = require('./model/Record');
 
 const server = new Hapi.Server();
+const EARTH_RADIUS = 6378.1; // This is kilometers
 
 server.connection({ port: config.server.port, host: config.server.host });
+
+function addDays(date, days) {
+    var result = new Date(date);
+    result.setDate(result.getDate() + days);
+    return result;
+}
+
+server.route({
+    method: 'GET',
+    path: '/validator/{imei}',
+    config: {
+        validate: {
+            params:{
+                imei: joi.string()
+            },
+            query: {
+                internalid: joi.number(), // Location internal id
+                radius: joi.number().min(0),
+                time: joi.date()
+            }
+        }
+    },
+    handler: function (request, reply) {
+        const start = new Date(request.query.time);
+        const end   = addDays(start, 1);
+
+        Place.findOne({ internalid: request.query.internalid}).
+            exec(function(err, place){
+                if(err){
+                    reply("Unable to validate: Undefined location");
+                    return;
+                }
+
+                const area = {
+                    center: place.location.coordinates,
+                    radius: request.query.radius / EARTH_RADIUS,
+                    unique: true,
+                    spherical: true
+                };
+
+                console.log("Validating:", request.params.imei, "With coordinates:", area.center, "And Radius:", area.radius);
+                console.log("Date From:", start, "To:", end);
+
+                Record.find().
+                    where('time').gte(start).lt(end).
+                    where('location').within().circle(area).
+                    sort({ time: 'asc' }).
+                    limit(10).
+                    exec(function(err, record){
+                        if(err){
+                            reply(err);
+                        } else {
+                            reply(record);
+                        }
+                    });
+
+            });
+    }
+});
 
 server.route({
     method: 'GET',
