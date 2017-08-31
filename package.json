@@ -1,0 +1,16 @@
+{
+  "name": "teltonika-server",
+  "version": "1.0.0",
+  "description": "",
+  "main": "api.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "hapi": "^16.5.2",
+    "joi": "^10.6.0",
+    "mongoose": "^4.11.9"
+  }
+}
