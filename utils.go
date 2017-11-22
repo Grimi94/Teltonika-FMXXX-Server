@@ -7,6 +7,12 @@ import (
 	"time"
 )
 
+func streamToUInt8(data []byte) (uint8, error) {
+	var y uint8
+	err := binary.Read(bytes.NewReader(data), binary.BigEndian, &y)
+	return y, err
+}
+
 func streamToInt8(data []byte) (int8, error) {
 	var y int8
 	err := binary.Read(bytes.NewReader(data), binary.BigEndian, &y)
